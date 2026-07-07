@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stryvo Vision — Video Captioning Demo</title>
+<style>
+  :root {
+    --bg: #0b0f1a; --panel: #131a2b; --panel2: #1a2338; --line: #263149;
+    --text: #e8edf7; --muted: #93a0bd; --accent: #6d8bff; --accent2: #9b6dff;
+    --formal: #5b9dff; --sarcastic: #ffb74d; --tech: #43d6a0; --nontech: #ff7bb0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 70% -10%, #17224a, transparent),
+      linear-gradient(180deg, #0b0f1a, #0a0e18); color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
+  h1 .grad { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .badge { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 999px; white-space: nowrap; }
+  .badge b { color: var(--tech); font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; margin-bottom: 20px; }
+  label.fld { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  input[type=text] {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 13px 14px; font-size: 14px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .chip { cursor: pointer; font-size: 12px; color: var(--muted); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; transition: .15s; }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .styles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 6px; }
+  @media (max-width: 560px) { .styles { grid-template-columns: 1fr; } }
+  .styleopt { display: flex; align-items: center; gap: 10px; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; cursor: pointer; user-select: none; }
+  .styleopt input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .styleopt .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .styleopt .nm { font-size: 14px; }
+  .styleopt .desc { font-size: 12px; color: var(--muted); }
+  button.go { margin-top: 18px; width: 100%; cursor: pointer; border: none; border-radius: 11px;
+    padding: 14px; font-size: 15px; font-weight: 600; color: #0b0f1a;
+    background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+  button.go:disabled { opacity: .55; cursor: default; }
+  .status { display: none; align-items: center; gap: 12px; color: var(--muted); font-size: 14px; margin-top: 16px; }
+  .spinner { width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err { display: none; margin-top: 16px; background: #2a1620; border: 1px solid #6b2740; color: #ffb4c8;
+    border-radius: 10px; padding: 12px 14px; font-size: 13px; }
+  #results { display: none; }
+  video { width: 100%; border-radius: 12px; background: #000; border: 1px solid var(--line); }
+  .desc { border-left: 3px solid var(--formal); padding-left: 14px; }
+  .desc .lab { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--formal); font-weight: 700; }
+  .desc p { margin: 6px 0 0; font-size: 15px; }
+  .capgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 640px) { .capgrid { grid-template-columns: 1fr; } }
+  .cap { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .cap .hd { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+  .cap .hd .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .cap p { margin: 0; font-size: 14.5px; line-height: 1.5; }
+  .sectlab { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 700; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
+  footer code { color: var(--tech); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Stryvo <span class="grad">Vision</span></h1>
+      <div class="sub">Watches a video clip and writes captions in four styles.</div>
+    </div>
+    <div class="badge">powered by <b>saieesh09/stryvo-vision:latest</b> · Docker</div>
+  </header>
+
+  <div class="card">
+    <label class="fld" for="url">Video URL (direct .mp4 link)</label>
+    <input id="url" type="text" placeholder="https://.../clip.mp4" />
+    <div class="examples" id="examples"></div>
+
+    <label class="fld" style="margin-top:18px;">Caption styles</label>
+    <div class="styles" id="styles"></div>
+
+    <button class="go" id="go">Describe &amp; Caption</button>
+    <div class="status" id="status"><div class="spinner"></div><span id="statusText">Running the container…</span></div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div id="results">
+    <div class="card"><video id="player" controls playsinline></video></div>
+    <div class="card desc" id="descCard">
+      <div class="lab">📝 What's in the video</div>
+      <p id="descText"></p>
+    </div>
+    <div class="card">
+      <p class="sectlab">Captions</p>
+      <div class="capgrid" id="capgrid"></div>
+    </div>
+  </div>
+
+  <footer>The demo runs the unmodified Docker Hub image per request — same artifact the judge pulls.<br>
+    Description is the <code>formal</code> caption the container returns.</footer>
+</div>
+
+<script>
+const STYLES = [
+  { key: "formal", name: "Formal", desc: "objective, factual", color: "var(--formal)" },
+  { key: "sarcastic", name: "Sarcastic", desc: "dry, ironic", color: "var(--sarcastic)" },
+  { key: "humorous_tech", name: "Humorous · Tech", desc: "jokes with tech refs", color: "var(--tech)" },
+  { key: "humorous_non_tech", name: "Humorous · Everyday", desc: "no jargon", color: "var(--nontech)" },
+];
+const EXAMPLES = [
+  { name: "🍂 Autumn boulevard", url: "https://storage.googleapis.com/amd-hackathon-clips/1860079-uhd_2560_1440_25fps.mp4" },
+  { name: "🐱 Orange kitten", url: "https://storage.googleapis.com/amd-hackathon-clips/13825391-uhd_3840_2160_30fps.mp4" },
+  { name: "💻 Office worker", url: "https://storage.googleapis.com/amd-hackathon-clips/3044693-uhd_3840_2160_24fps.mp4" },
+];
+const colorFor = k => (STYLES.find(s => s.key === k) || {}).color || "var(--accent)";
+const nameFor = k => (STYLES.find(s => s.key === k) || {}).name || k;
+
+const $ = id => document.getElementById(id);
+
+// Build example chips
+EXAMPLES.forEach(ex => {
+  const c = document.createElement("div");
+  c.className = "chip"; c.textContent = ex.name;
+  c.onclick = () => { $("url").value = ex.url; };
+  $("examples").appendChild(c);
+});
+
+// Build style checkboxes (all checked by default)
+STYLES.forEach(s => {
+  const l = document.createElement("label"); l.className = "styleopt";
+  l.innerHTML = `<input type="checkbox" value="${s.key}" checked>
+    <span class="dot" style="background:${s.color}"></span>
+    <span><span class="nm">${s.name}</span><br><span class="desc">${s.desc}</span></span>`;
+  $("styles").appendChild(l);
+});
+
+function selectedStyles() {
+  return [...document.querySelectorAll('#styles input:checked')].map(i => i.value);
+}
+
+let timer = null;
+async function generate() {
+  const url = $("url").value.trim();
+  const styles = selectedStyles();
+  $("err").style.display = "none";
+  if (!url) { showErr("Please enter a video URL (or click an example)."); return; }
+  if (styles.length === 0) { showErr("Pick at least one caption style."); return; }
+
+  $("results").style.display = "none";
+  $("go").disabled = true;
+  const started = Date.now();
+  $("status").style.display = "flex";
+  $("statusText").textContent = "Running the container… (0s)";
+  timer = setInterval(() => {
+    $("statusText").textContent = `Running the container… (${Math.round((Date.now()-started)/1000)}s · downloads + frames + vision + styling)`;
+  }, 1000);
+
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_url: url, styles }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    render(url, data.captions, styles);
+  } catch (e) {
+    showErr("Failed: " + e.message);
+  } finally {
+    clearInterval(timer);
+    $("status").style.display = "none";
+    $("go").disabled = false;
+  }
+}
+
+function showErr(msg) { const e = $("err"); e.textContent = msg; e.style.display = "block"; }
+
+function render(url, captions, styles) {
+  captions = captions || {};
+  $("player").src = url;
+
+  // Description = formal caption (always requested by the backend).
+  if (captions.formal) {
+    $("descCard").style.display = "block";
+    $("descText").textContent = captions.formal;
+  } else {
+    $("descCard").style.display = "none";
+  }
+
+  // Caption cards for every SELECTED style — including formal (also shown above as the
+  // description), so the formal caption appears under Captions too.
+  const grid = $("capgrid"); grid.innerHTML = "";
+  const show = styles.slice();
+  if (show.length === 0) {
+    grid.innerHTML = '<p class="desc" style="color:var(--muted)">No caption styles selected.</p>';
+  }
+  show.forEach(k => {
+    const cap = captions[k] || "(no caption returned)";
+    const card = document.createElement("div"); card.className = "cap";
+    card.innerHTML = `<div class="hd" style="color:${colorFor(k)}">
+      <span class="dot" style="background:${colorFor(k)}"></span>${nameFor(k)}</div>
+      <p></p>`;
+    card.querySelector("p").textContent = cap;
+    grid.appendChild(card);
+  });
+
+  $("results").style.display = "block";
+  $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("go").onclick = generate;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") generate(); });
+</script>
+</body>
+</html>
