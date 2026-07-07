@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+input/
+output/
+.git/
+.gitignore
+README.md
+*.md
+.env
+scratch/
