@@ -11,7 +11,7 @@ All model calls go through **Fireworks AI** (OpenAI-compatible API) using
 
 ```
 tasks.json → download video → ffmpeg keyframe sampling → downscale (768px, JPEG)
-           → base64 (budget-enforced) → ONE Qwen2.5-VL request (neutral description)
+           → base64 (budget-enforced) → ONE vision request (neutral description)
            → one styling call per requested style (concurrent) → results.json
 ```
 
@@ -28,6 +28,7 @@ style rewrites run concurrently; tasks run concurrently too.
 | `requirements.txt` | `openai`, `httpx`. |
 | `input/tasks.json` | Sample input for the three example clips. |
 | `run_local.ps1` / `run_local.sh` | Local end-to-end test harness. |
+| `demo/` | Presentation UI (`server.py` + `index.html`) that runs the published image live. |
 
 ## Models (swap without hunting)
 
@@ -90,6 +91,58 @@ docker run --rm \
    ./run_local.sh
    ```
 4. Inspect `output/results.json`.
+
+## Demo UI (for presentations)
+
+A small web UI that lets you paste a video link, pick styles, and see the description +
+captions — by running the **published Docker Hub image** live (not a reimplementation).
+
+```powershell
+# Docker Desktop running + .env has your key
+./demo/start_demo.ps1        # or: python demo/server.py
+```
+
+Opens `http://localhost:8000`. Paste a `.mp4` URL (or click an example), choose styles,
+hit **Describe & Caption**. It plays the clip, shows the `formal` caption as the video
+description, and shows a card per selected style. Each request takes ~20–40s (the backend
+does a full `docker run` of the image per clip). The image is **unmodified** — the demo
+just always requests the `formal` style and presents it as the description line.
+
+> Backend: `demo/server.py` (Python stdlib only, no pip installs). It writes a one-task
+> `tasks.json`, runs `saieesh09/stryvo-vision:latest` with your `.env`, and returns the
+> `results.json`. Set `DEMO_PORT` / `DEMO_IMAGE` env vars to override.
+
+## Hosted demo on Streamlit Community Cloud
+
+Streamlit Cloud **can't run Docker**, so the hosted demo reuses the pipeline code
+(`main.py` / `styles.py`) directly — same models, prompts, and `reasoning_effort`. The
+**Docker image is not modified**; this is a parallel demo path. Because it runs the
+pipeline live, it shows the real neutral scene description plus captions.
+
+Files: `streamlit/streamlit_app.py` (entrypoint), `streamlit/requirements.txt`
+(subfolder — takes precedence, keeps the Docker `requirements.txt` untouched), and
+`packages.txt` at the **repo root** (`ffmpeg` — Streamlit requires `packages.txt` at
+root; Docker ignores it).
+
+**Run locally:**
+```powershell
+./run_streamlit.ps1        # loads .env, installs deps, launches; needs ffmpeg on PATH
+```
+
+**Deploy to Community Cloud:**
+1. Push this repo to GitHub (see the git steps below).
+2. Go to <https://share.streamlit.io> → **Create app** → pick the repo/branch.
+3. Set **Main file path** to `streamlit/streamlit_app.py`.
+4. **Advanced settings → Secrets**, paste:
+   ```toml
+   FIREWORKS_API_KEY = "fw_your_key_here"
+   ```
+5. Deploy. First build installs `ffmpeg` (from `packages.txt`) + Python deps (~1–2 min).
+
+> ⚠️ **Cost/security:** a public Streamlit app runs on **your** `FIREWORKS_API_KEY` —
+> every visitor's caption request is billed to you. Unlike the judged Docker image (where
+> the caller brings their own key), don't share the URL widely, or add a password
+> (`st.text_input(type="password")` gate) / take it down after the demo.
 
 ## Output contract
 

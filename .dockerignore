@@ -8,3 +8,7 @@ README.md
 *.md
 .env
 scratch/
+demo/
+streamlit/
+packages.txt
+run_streamlit.ps1
