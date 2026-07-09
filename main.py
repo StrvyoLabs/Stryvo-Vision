@@ -4,8 +4,8 @@ main.py — Video-captioning agent.
 
 Flow per task:
   download video -> ffmpeg keyframe sampling + downscale -> base64 (budget-enforced)
-  -> ONE Qwen2.5-VL request for a neutral scene description
-  -> one styling call per requested style (run concurrently)
+  -> ONE vision request for a neutral scene description (Fireworks -> Groq fallback)
+  -> one styling call per requested style (concurrent, Fireworks -> Groq fallback)
   -> collect captions.
 
 Reads   /input/tasks.json
@@ -45,22 +45,66 @@ from styles import (
 # ---------------------------------------------------------------------------
 # Configuration (override any of these via environment variables)
 # ---------------------------------------------------------------------------
+# Credentials. The judging VM injects NO env vars — it runs the container with your own
+# credentials baked in (via Docker build-args -> ENV). At runtime, a mounted --env-file
+# still overrides these, so local dev uses .env and the judge uses the baked values.
 FIREWORKS_BASE_URL = os.getenv("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1")
 FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY", "")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Model IDs — verified LIVE against this account's Fireworks catalog (July 2026).
-# kimi-k2p6 is the only image-capable model available on this account; glm-5p2 is the
-# fast text model used for styling. Swap freely via env vars.
+# --- Primary provider: Fireworks (verified live against this account, July 2026) ---
+# kimi-k2p6 is the only image-capable model on this account; glm-5p2 is the fast styler.
 VISION_MODEL = os.getenv("VISION_MODEL", "accounts/fireworks/models/kimi-k2p6")
 TEXT_MODEL = os.getenv("TEXT_MODEL", "accounts/fireworks/models/glm-5p2")
-
-# These are reasoning models: without this they dump chain-of-thought into the caption.
-# "none" disables reasoning so `content` is the clean caption. Set to "" to omit the param.
+# Fireworks models are reasoning models; "none" keeps chain-of-thought OUT of captions.
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "none")
+
+# --- Fallback provider: Groq (used automatically if Fireworks fails/auth/timeouts) ---
+# Llama-4 Scout is multimodal (vision); llama-3.3-70b is a fast, clean styler. Neither is
+# a reasoning model, so no reasoning_effort param is sent to Groq.
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+GROQ_TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
+# Groq's Llama-4 vision models accept at most 5 images per request (Fireworks allows 30).
+GROQ_MAX_IMAGES = int(os.getenv("GROQ_MAX_IMAGES", "5"))
+
+
+class Provider:
+    """One OpenAI-compatible backend with its own client, models, and per-provider caps."""
+
+    def __init__(self, name, base_url, api_key, vision_model, text_model, extra_body, max_images):
+        self.name = name
+        self.vision_model = vision_model
+        self.text_model = text_model
+        self.extra_body = extra_body
+        self.max_images = max_images  # cap on images per vision request for this provider
+        self.client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key or "missing",
+            timeout=REQUEST_TIMEOUT, max_retries=0,
+        )
+
+
+def build_providers() -> List["Provider"]:
+    """Providers in priority order; only those with a key are included."""
+    provs = []
+    if FIREWORKS_API_KEY:
+        provs.append(Provider(
+            "fireworks", FIREWORKS_BASE_URL, FIREWORKS_API_KEY,
+            VISION_MODEL, TEXT_MODEL,
+            {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else None,
+            MAX_IMAGES_PER_REQUEST,
+        ))
+    if GROQ_API_KEY:
+        provs.append(Provider(
+            "groq", GROQ_BASE_URL, GROQ_API_KEY,
+            GROQ_VISION_MODEL, GROQ_TEXT_MODEL, None,
+            GROQ_MAX_IMAGES,
+        ))
+    return provs
 
 # Frame sampling / downscale settings.
 NUM_FRAMES = int(os.getenv("NUM_FRAMES", "12"))          # target keyframes per clip
-FRAME_LONGEST_SIDE = int(os.getenv("FRAME_LONGEST_SIDE", "768"))  # px, longest side
+FRAME_LONGEST_SIDE = int(os.getenv("FRAME_LONGEST_SIDE", "1024"))  # px, longest side
 JPEG_QSCALE = int(os.getenv("JPEG_QSCALE", "5"))          # ffmpeg mjpeg -q:v (2=best..31); ~5 ≈ q80
 SCENE_DETECT = os.getenv("SCENE_DETECT", "0") == "1"      # optional scene-change sampling
 
@@ -239,63 +283,87 @@ def _evenly_subsample(items: List, k: int) -> List:
 
 
 # ---------------------------------------------------------------------------
-# Fireworks calls
+# Model calls (multi-provider: primary -> fallback)
 # ---------------------------------------------------------------------------
 VISION_INSTRUCTION = (
-    "You are a meticulous visual analyst. The following images are keyframes sampled "
-    "in order from a single short video clip. Describe the clip as ONE neutral, factual "
-    "paragraph that a caption writer could rely on. Cover: the setting/location, the "
-    "main subjects, what actions or motion occur across the frames, the overall mood, "
-    "notable visual details (colors, weather, lighting), and any visible text, signage, "
-    "screens, or technology. Do not add humor, opinion, or invented details. If "
-    "something is unclear, describe what is plausibly shown without overstating. "
-    "English only."
+    "You are a meticulous visual analyst. The images are keyframes sampled in order from "
+    "ONE short video clip. Write a single dense, neutral, factual paragraph (4-6 sentences) "
+    "that a caption writer can fully rely on. Be specific and concrete. Explicitly cover:\n"
+    "1) The MAIN SUBJECT(S): who/what, how many, appearance (clothing, color, species, type).\n"
+    "2) The KEY ACTION or motion happening across the frames (what actually changes/moves).\n"
+    "3) The SETTING/location and time of day or weather if visible.\n"
+    "4) Notable details: dominant colors, lighting, mood, and anything distinctive.\n"
+    "5) Any TEXT, signage, logos/brands, screens, or technology: quote text ONLY if it is "
+    "clearly legible, exactly as written; if text is blurry or partial, say 'some signage' "
+    "without guessing the words or brand.\n"
+    "State only what is actually visible. Do not add humor, opinion, or invented details; "
+    "if something is uncertain, describe what is plausibly shown without overstating. "
+    "Lead with the single most important, most caption-worthy fact. English only."
 )
 
 
-async def get_scene_description(client: AsyncOpenAI, b64_frames: List[str], task_id: str) -> str:
-    # Static instruction first, variable images last (prompt-cache friendly).
-    content = [{"type": "text", "text": VISION_INSTRUCTION}]
-    for b64 in b64_frames:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
-    messages = [{"role": "user", "content": content}]
-
-    resp = await _chat_with_retry(
-        client, model=VISION_MODEL, messages=messages,
-        max_tokens=400, temperature=0.2, label=f"vision:{task_id}",
-    )
-    if resp:
-        text = _clean_text(resp.choices[0].message.content or "")
-        if text:
-            return text
-    raise RuntimeError(f"vision analysis returned no text for {task_id}")
-
-
-async def generate_style_caption(
-    client: AsyncOpenAI, style: str, description: str, task_id: str
-) -> str:
-    try:
-        messages = build_style_messages(style, description)
+async def get_scene_description(providers: List[Provider], b64_frames: List[str], task_id: str) -> str:
+    # Try each provider; each gets frames capped to its own per-request image limit
+    # (Groq's Llama-4 allows 5, Fireworks 30), evenly subsampled so coverage stays broad.
+    for prov in providers:
+        frames = _evenly_subsample(b64_frames, prov.max_images)
+        content = [{"type": "text", "text": VISION_INSTRUCTION}]  # static first, images last
+        for b64 in frames:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+        messages = [{"role": "user", "content": content}]
         resp = await _chat_with_retry(
-            client, model=TEXT_MODEL, messages=messages,
-            max_tokens=90, temperature=0.7, label=f"style:{style}:{task_id}",
+            prov.client, model=prov.vision_model, messages=messages,
+            max_tokens=400, temperature=0.2, extra_body=prov.extra_body,
+            label=f"vision:{task_id}@{prov.name}({len(frames)} imgs)",
         )
         if resp:
             text = _clean_text(resp.choices[0].message.content or "")
             if text:
+                if prov is not providers[0]:
+                    log(f"[fallback] vision:{task_id} served by {prov.name}")
                 return text
-        raise RuntimeError("empty styling response")
+    raise RuntimeError(f"vision analysis returned no text for {task_id}")
+
+
+async def generate_style_caption(
+    providers: List[Provider], style: str, description: str, task_id: str
+) -> str:
+    try:
+        messages = build_style_messages(style, description)
+        text = await _call_with_fallback(
+            providers, "text_model", messages,
+            max_tokens=90, temperature=0.7, label=f"style:{style}:{task_id}",
+        )
+        if text:
+            return text
+        raise RuntimeError("empty styling response from all providers")
     except Exception as e:  # noqa: BLE001 - never drop a style key
         log(f"[style] {style} for {task_id} failed, using fallback: {e}")
         return STYLE_FALLBACKS.get(style, "A short video clip.")
 
 
-async def _chat_with_retry(client, *, model, messages, max_tokens, temperature, label):
-    # Disable reasoning so `content` is the clean caption, not chain-of-thought.
-    extra_body = {"reasoning_effort": REASONING_EFFORT} if REASONING_EFFORT else None
+async def _call_with_fallback(providers, model_attr, messages, *, max_tokens, temperature, label):
+    """Try each provider in order (with per-provider retries); return first clean text."""
+    for prov in providers:
+        model = getattr(prov, model_attr)
+        resp = await _chat_with_retry(
+            prov.client, model=model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature,
+            extra_body=prov.extra_body, label=f"{label}@{prov.name}",
+        )
+        if resp:
+            text = _clean_text(resp.choices[0].message.content or "")
+            if text:
+                if prov is not providers[0]:
+                    log(f"[fallback] {label} served by {prov.name}")
+                return text
+    return None
+
+
+async def _chat_with_retry(client, *, model, messages, max_tokens, temperature, extra_body, label):
     delay = 1.0
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -306,7 +374,7 @@ async def _chat_with_retry(client, *, model, messages, max_tokens, temperature, 
                 extra_body=extra_body,
             )
         except Exception as e:  # noqa: BLE001
-            log(f"[fireworks] {label} attempt {attempt}/{MAX_RETRIES}: {e}")
+            log(f"[api] {label} attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(delay)
                 delay *= 2
@@ -331,7 +399,7 @@ def _clean_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Per-task orchestration
 # ---------------------------------------------------------------------------
-async def process_task(client: AsyncOpenAI, task: dict) -> dict:
+async def process_task(providers: List[Provider], task: dict) -> dict:
     task_id = task.get("task_id", "unknown")
     video_url = task.get("video_url", "")
     styles = task.get("styles") or SUPPORTED_STYLES
@@ -353,7 +421,7 @@ async def process_task(client: AsyncOpenAI, task: dict) -> dict:
                 b64 = await asyncio.to_thread(frames_to_budgeted_b64, frames)
                 if b64:
                     try:
-                        description = await get_scene_description(client, b64, task_id)
+                        description = await get_scene_description(providers, b64, task_id)
                         log(f"[task] {task_id}: description ok ({len(description)} chars)")
                     except Exception as e:  # noqa: BLE001
                         log(f"[task] {task_id}: vision failed: {e}")
@@ -372,7 +440,7 @@ async def process_task(client: AsyncOpenAI, task: dict) -> dict:
 
     # Run the requested style rewrites concurrently.
     results = await asyncio.gather(
-        *[generate_style_caption(client, s, description, task_id) for s in styles]
+        *[generate_style_caption(providers, s, description, task_id) for s in styles]
     )
     captions = {style: cap for style, cap in zip(styles, results)}
 
@@ -424,29 +492,28 @@ def write_results_atomic(results: List[dict]) -> None:
 
 async def run() -> int:
     start = time.time()
-    if not FIREWORKS_API_KEY:
-        log("[fatal] FIREWORKS_API_KEY not set in environment")
+    providers = build_providers()
+    if not providers:
+        log("[fatal] no API keys available (FIREWORKS_API_KEY / GROQ_API_KEY both empty)")
         # Still emit valid (fallback) output so results.json is never missing.
+    else:
+        chain = " -> ".join(f"{p.name}({p.vision_model.split('/')[-1]}/{p.text_model.split('/')[-1]})"
+                            for p in providers)
+        log(f"[main] provider chain: {chain}")
+
     tasks = load_tasks()
-    log(f"[main] loaded {len(tasks)} task(s); vision={VISION_MODEL} text={TEXT_MODEL}")
+    log(f"[main] loaded {len(tasks)} task(s)")
 
     if not tasks:
         write_results_atomic([])
         return 0
-
-    client = AsyncOpenAI(
-        base_url=FIREWORKS_BASE_URL,
-        api_key=FIREWORKS_API_KEY or "missing",
-        timeout=REQUEST_TIMEOUT,
-        max_retries=0,  # we handle retries ourselves
-    )
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
     async def guarded(t):
         async with sem:
             try:
-                return await process_task(client, t)
+                return await process_task(providers, t)
             except Exception as e:  # noqa: BLE001 - never let one task kill the batch
                 tid = t.get("task_id", "unknown")
                 styles = list(dict.fromkeys(t.get("styles") or SUPPORTED_STYLES))

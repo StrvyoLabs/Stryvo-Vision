@@ -4,8 +4,13 @@ A containerized agent that watches short video clips and writes captions in four
 styles. It reads `/input/tasks.json`, processes each video through Fireworks AI, writes
 `/output/results.json`, and exits `0`.
 
-All model calls go through **Fireworks AI** (OpenAI-compatible API) using
-`FIREWORKS_API_KEY`, supplied **at runtime** via env var — never baked into the image.
+Models run **primary on Fireworks AI, with automatic fallback to Groq** (both
+OpenAI-compatible). The judging VM injects **no** env vars, so credentials are **baked
+into the image** at build time via `--build-arg` (a runtime `--env-file`/`-e` still
+overrides them for local dev).
+
+> ⚠️ A public image exposes baked keys. Use **spend-capped** keys and **rotate after
+> judging**.
 
 ## Pipeline
 
@@ -34,11 +39,18 @@ style rewrites run concurrently; tasks run concurrently too.
 
 Set near the top of `main.py`, overridable via env vars:
 
-| Role | Env var | Default (verified LIVE against this account, Jul 2026) |
+| Role | Env var | Default (verified LIVE, Jul 2026) |
 |------|---------|------------------------------------|
-| Vision | `VISION_MODEL` | `accounts/fireworks/models/kimi-k2p6` |
-| Styling | `TEXT_MODEL` | `accounts/fireworks/models/glm-5p2` |
-| Reasoning | `REASONING_EFFORT` | `none` — required; these are reasoning models |
+| Vision (primary) | `VISION_MODEL` | `accounts/fireworks/models/kimi-k2p6` |
+| Styling (primary) | `TEXT_MODEL` | `accounts/fireworks/models/glm-5p2` |
+| Reasoning | `REASONING_EFFORT` | `none` — Fireworks models are reasoning models |
+| Vision (fallback) | `GROQ_VISION_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` (max 5 imgs) |
+| Styling (fallback) | `GROQ_TEXT_MODEL` | `llama-3.3-70b-versatile` |
+
+**Multi-provider fallback:** each vision/styling call tries Fireworks first, then Groq
+(auth error, timeout, or empty response triggers failover — logged as `[fallback] …`).
+Providers with no key are skipped. Groq's Llama-4 accepts ≤5 images, so frames are capped
+per-provider. This survives a full Fireworks outage and doubles as a quality backstop.
 
 > These IDs were chosen by querying the account's live `/v1/models` list and probing
 > which models accept image input. On this account **`kimi-k2p6` is the only
@@ -48,24 +60,29 @@ Set near the top of `main.py`, overridable via env vars:
 > `REASONING_EFFORT=` (empty) to omit the param. Re-run `python probe.py`-style checks if
 > your account's catalog differs — Fireworks model IDs change often.
 
-## Build & push (must be linux/amd64, publicly pullable)
+## Build & push (linux/amd64, publicly pullable, keys baked in)
 
 ```bash
 docker buildx build --platform linux/amd64 \
+  --build-arg FIREWORKS_API_KEY=fw_xxx \
+  --build-arg GROQ_API_KEY=gsk_xxx \
   --tag <registry>/<image>:latest \
   --push .
 ```
 
-The judging VM is `linux/amd64`; an image without that manifest scores zero. Confirm the
-image is **publicly pullable** before submitting.
+The judging VM is `linux/amd64` and injects **no env vars**, so the keys must be baked in
+via `--build-arg`. An image without the `linux/amd64` manifest scores zero. Confirm it's
+**publicly pullable** before submitting. Keys in a public image are extractable — cap and
+rotate them.
 
-## Where to set FIREWORKS_API_KEY
+## Credentials
 
-Runtime only — never in the image:
+Baked at build time (above) so a plain `docker run` with no env works — that's how the
+judge runs it. For **local dev**, a mounted `--env-file .env` overrides the baked values:
 
 ```bash
 docker run --rm \
-  -e FIREWORKS_API_KEY=fw_xxx \
+  --env-file .env \
   -v /path/to/input:/input:ro \
   -v /path/to/output:/output \
   <registry>/<image>:latest

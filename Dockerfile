@@ -20,6 +20,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py styles.py ./
 
-# FIREWORKS_API_KEY is provided at runtime via `-e FIREWORKS_API_KEY=...` — never baked in.
+# The judging VM injects NO env vars, so credentials must travel inside the image.
+# They are passed at build time as --build-arg (kept out of the repo/Dockerfile source)
+# and baked into ENV so a plain `docker run` (no -e) works. A runtime --env-file/-e still
+# overrides these, so local dev keeps using .env.
+#   docker buildx build --platform linux/amd64 \
+#     --build-arg FIREWORKS_API_KEY=fw_... --build-arg GROQ_API_KEY=gsk_... \
+#     -t <registry>/<image>:latest --push .
+# NOTE: a public image exposes these keys — use spend-capped keys and rotate after judging.
+ARG FIREWORKS_API_KEY=""
+ARG GROQ_API_KEY=""
+ENV FIREWORKS_API_KEY=$FIREWORKS_API_KEY \
+    GROQ_API_KEY=$GROQ_API_KEY
+
 # Reads /input/tasks.json, writes /output/results.json, exits 0.
 ENTRYPOINT ["python", "main.py"]

@@ -27,6 +27,15 @@ LENGTH_GUIDANCE = (
     "preamble, or markdown. English only."
 )
 
+# Reinforces accuracy for the non-formal styles: the joke may exaggerate, but the actual
+# subject and action must stay recognizable so accuracy graders still credit the caption.
+GROUNDING_RULE = (
+    "Accuracy still counts: the real MAIN SUBJECT and the real ACTION from the scene must "
+    "be clearly recognizable in your caption. You may exaggerate their significance for "
+    "effect, but never swap in a different subject/action or invent things that aren't "
+    "there. Anchor the joke to a concrete detail from the description.\n\n"
+)
+
 # ---------------------------------------------------------------------------
 # System prompts. Static content first, few-shot examples embedded, so the
 # provider can cache the shared prefix across the ~12 hidden clips.
@@ -53,6 +62,7 @@ STYLE_SYSTEM_PROMPTS = {
         "clip, write a SARCASTIC caption: ironic, deadpan, and lightly mocking, as if "
         "gently unimpressed. Stay clever rather than mean, and keep it grounded in what "
         "is actually shown — the irony comes from tone, not from making things up.\n\n"
+        f"{GROUNDING_RULE}"
         f"{LENGTH_GUIDANCE}\n\n"
         "Examples:\n"
         "Scene: A person stares at a laptop in an office, typing occasionally, looking "
@@ -69,6 +79,7 @@ STYLE_SYSTEM_PROMPTS = {
         "tech, programming, or internet reference (bugs, deploys, servers, merge "
         "conflicts, CPUs, algorithms, Stack Overflow, etc.). The analogy must fit what "
         "is actually shown — funny first, but still recognizably about the scene.\n\n"
+        f"{GROUNDING_RULE}"
         f"{LENGTH_GUIDANCE}\n\n"
         "Examples:\n"
         "Scene: A dog runs in circles chasing its own tail in a backyard.\n"
@@ -83,6 +94,7 @@ STYLE_SYSTEM_PROMPTS = {
         "description of a video clip, write a HUMOROUS caption using everyday, relatable "
         "humor — NO technical or programming jargon whatsoever. Think warm, playful, "
         "the kind of joke anyone would get. Keep it tied to what is actually shown.\n\n"
+        f"{GROUNDING_RULE}"
         f"{LENGTH_GUIDANCE}\n\n"
         "Examples:\n"
         "Scene: A small orange kitten bats at a ball of yarn on a wooden floor.\n"
